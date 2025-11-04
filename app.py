@@ -347,6 +347,7 @@ if user_input:
                 llm_text = call_llm_fallback(
                     user_query=user_input,
                     condition_name=condition_name,
+                    clinical_data=st.session_state.clinical_data,
                     chat_history=st.session_state.messages,
                 )
                 if llm_text:
