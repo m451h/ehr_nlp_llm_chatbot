@@ -17,6 +17,7 @@ sys.path.insert(0, '.')
 from src.search.search_engine import ChatbotSearchHandler
 from src.database.vector_db import VectorDatabase
 from src.models.fallback import call_llm_fallback
+from src.models.condition_educator import generate_condition_note
 
 # ============================================================================
 # PAGE CONFIG
@@ -145,6 +146,24 @@ if 'stats' not in st.session_state:
         'low_confidence': 0
     }
 
+# Mock clinical data (assuming user is logged in)
+# In real app, this would come from user's account/database
+if 'clinical_data' not in st.session_state:
+    st.session_state.clinical_data = {
+        'سن': '45 سال',
+        'جنسیت': 'مرد',
+        'وزن': '78 کیلوگرم',
+        'قد': '175 سانتی‌متر',
+        'فشار خون': '140/90 mmHg',
+        'قند خون ناشتا': '95 mg/dL',
+        'کلسترول': '220 mg/dL',
+        'داروهای فعلی': 'متفورمین 500mg',
+        'سابقه بیماری': 'فشار خون بالا'
+    }
+
+if 'educational_note' not in st.session_state:
+    st.session_state.educational_note = None
+
 # ============================================================================
 # SIDEBAR
 # ============================================================================
@@ -163,10 +182,27 @@ with st.sidebar:
         key="condition_selector"
     )
     
-    # Start new chat button
+    # Start new chat button - also generates educational note
     if st.button("🆕 شروع چت جدید", use_container_width=True):
         st.session_state.current_condition = selected_condition
         st.session_state.messages = []
+        
+        # Generate educational note automatically
+        condition_name = conditions[selected_condition]
+        with st.spinner('📝 در حال تولید یادداشت آموزشی...'):
+            note = generate_condition_note(
+                condition_name=condition_name,
+                clinical_data=st.session_state.clinical_data
+            )
+            if note:
+                st.session_state.educational_note = {
+                    'condition': selected_condition,
+                    'condition_name': condition_name,
+                    'note': note
+                }
+            else:
+                st.session_state.educational_note = None
+        
         st.rerun()
     
     st.markdown("---")
@@ -219,6 +255,16 @@ if st.session_state.current_condition:
 else:
     st.warning("⚠️ لطفا یک بیماری را از منوی کناری انتخاب کنید و روی 'شروع چت جدید' کلیک کنید")
     st.stop()
+
+# Display educational note if available
+if st.session_state.educational_note and st.session_state.educational_note['condition'] == st.session_state.current_condition:
+    st.markdown("---")
+    st.subheader("📚 یادداشت آموزشی شخصی‌سازی شده")
+    with st.expander(f"📖 یادداشت آموزشی برای {st.session_state.educational_note['condition_name']}", expanded=True):
+        st.markdown(st.session_state.educational_note['note'])
+    if st.button("❌ بستن یادداشت"):
+        st.session_state.educational_note = None
+        st.rerun()
 
 st.markdown("---")
 
