@@ -21,6 +21,7 @@ from datetime import datetime
 
 from src.search.search_engine import ChatbotSearchHandler
 from src.database.vector_db import VectorDatabase
+from src.database.chat_db import ChatDatabase
 from src.models.fallback import call_llm_fallback
 from src.models.condition_educator import generate_condition_note
 
@@ -82,8 +83,8 @@ def get_available_conditions():
             "cond_asthma": "آسم"
         }
 
-# In-memory session store (for production, use Redis or database)
-sessions: Dict[str, Dict] = {}
+# Initialize SQLite database for chat history
+chat_db = ChatDatabase()
 
 # Default clinical data structure
 DEFAULT_CLINICAL_DATA = {
@@ -208,23 +209,6 @@ def start_chat(request: StartChatRequest):
                     persian_data[key] = value
             clinical_data = persian_data
         
-        # Initialize session
-        sessions[session_id] = {
-            'session_id': session_id,
-            'current_condition': request.condition_id,
-            'condition_name': condition_name,
-            'messages': [],
-            'stats': {
-                'total_queries': 0,
-                'high_confidence': 0,
-                'medium_confidence': 0,
-                'low_confidence': 0
-            },
-            'clinical_data': clinical_data,
-            'educational_note': None,
-            'created_at': datetime.now().isoformat()
-        }
-        
         # Generate educational note if requested
         educational_note = None
         if request.generate_educational_note:
@@ -238,7 +222,15 @@ def start_chat(request: StartChatRequest):
                     'condition_name': condition_name,
                     'note': note
                 }
-                sessions[session_id]['educational_note'] = educational_note
+        
+        # Create session in database
+        chat_db.create_session(
+            session_id=session_id,
+            condition_id=request.condition_id,
+            condition_name=condition_name,
+            clinical_data=clinical_data,
+            educational_note=educational_note
+        )
         
         return {
             "success": True,
@@ -257,28 +249,32 @@ def start_chat(request: StartChatRequest):
 def query_chat(request: QueryRequest):
     """Send a query to the chatbot"""
     try:
-        # Get session
-        if request.session_id not in sessions:
+        # Get session from database
+        session = chat_db.get_session(request.session_id)
+        if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         
-        session = sessions[request.session_id]
         handler = get_handler()
         
-        # Add user message to session
-        user_message = {
-            'role': 'user',
-            'content': request.query
-        }
-        session['messages'].append(user_message)
+        # Add user message to database
+        chat_db.add_message(
+            session_id=request.session_id,
+            role='user',
+            content=request.query
+        )
+        
+        # Get chat history for LLM fallback
+        chat_history = chat_db.get_messages(request.session_id)
         
         # Get bot response
         response = handler.handle_user_query(
             query=request.query,
-            condition_id=session['current_condition']
+            condition_id=session['condition_id']
         )
         
         # Update stats
-        session['stats']['total_queries'] += 1
+        stats = session['stats'].copy()
+        stats['total_queries'] += 1
         
         # Handle different response types
         bot_message = None
@@ -287,7 +283,7 @@ def query_chat(request: QueryRequest):
         if response['response_type'] == 'direct_answer':
             bot_message = response['answer']
             confidence = 'high-confidence'
-            session['stats']['high_confidence'] += 1
+            stats['high_confidence'] += 1
             
             # Add follow-up if available
             if response.get('follow_up'):
@@ -296,14 +292,14 @@ def query_chat(request: QueryRequest):
         elif response['response_type'] == 'clarification':
             bot_message = response['message']
             confidence = 'medium-confidence'
-            session['stats']['medium_confidence'] += 1
+            stats['medium_confidence'] += 1
         
         elif response['response_type'] == 'condition_mismatch':
             bot_message = f"⚠️ {response['message']}\n\n"
             bot_message += f"بیماری تشخیص داده شده: **{response['detected_condition_name']}**\n\n"
             bot_message += response['suggestion']
             confidence = 'medium-confidence'
-            session['stats']['medium_confidence'] += 1
+            stats['medium_confidence'] += 1
         
         elif response['response_type'] == 'llm_fallback':
             # Try LLM fallback
@@ -312,36 +308,39 @@ def query_chat(request: QueryRequest):
                 user_query=request.query,
                 condition_name=condition_name,
                 clinical_data=session['clinical_data'],
-                chat_history=session['messages'],
+                chat_history=chat_history,
             )
             if llm_text:
                 bot_message = llm_text
                 confidence = 'medium-confidence'
-                session['stats']['medium_confidence'] += 1
+                stats['medium_confidence'] += 1
             else:
                 bot_message = "❌ متأسفم، جواب دقیقی در اطلاعات موجود پیدا نکردم.\n\n"
                 bot_message += "💡 می‌توانید سوال خود را واضح‌تر بپرسید یا از کلمات دیگری استفاده کنید."
                 confidence = 'low-confidence'
-                session['stats']['low_confidence'] += 1
+                stats['low_confidence'] += 1
         
         else:
             bot_message = "❌ خطا در پردازش سوال"
             confidence = 'low-confidence'
         
-        # Add bot message to session
-        bot_message_obj = {
-            'role': 'bot',
-            'content': bot_message,
-            'confidence_level': confidence
-        }
-        session['messages'].append(bot_message_obj)
+        # Add bot message to database
+        chat_db.add_message(
+            session_id=request.session_id,
+            role='bot',
+            content=bot_message,
+            confidence_level=confidence
+        )
+        
+        # Update stats in database
+        chat_db.update_session_stats(request.session_id, stats)
         
         return {
             "success": True,
             "message": bot_message,
             "confidence_level": confidence,
             "response_type": response.get('response_type'),
-            "stats": session['stats']
+            "stats": stats
         }
     
     except HTTPException:
@@ -352,19 +351,33 @@ def query_chat(request: QueryRequest):
 @app.get("/api/chat/history/{session_id}")
 def get_chat_history(session_id: str):
     """Get chat history for a session"""
-    if session_id not in sessions:
+    session = chat_db.get_full_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    session = sessions[session_id]
     return {
         "success": True,
         "session_id": session_id,
-        "current_condition": session['current_condition'],
+        "current_condition": session['condition_id'],
         "condition_name": session['condition_name'],
         "messages": session['messages'],
         "stats": session['stats'],
         "educational_note": session.get('educational_note')
     }
+
+@app.get("/api/chat/sessions")
+def list_all_sessions():
+    """Get list of all chat sessions (for sidebar/history display)"""
+    try:
+        session_list = chat_db.list_all_sessions()
+        
+        return {
+            "success": True,
+            "sessions": session_list,
+            "total": len(session_list)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(e)}")
 
 @app.post("/api/chat/educational-note")
 def generate_educational_note(request: StartChatRequest):
@@ -422,10 +435,9 @@ def generate_educational_note(request: StartChatRequest):
 @app.post("/api/chat/update-clinical-data")
 def update_clinical_data(request: UpdateClinicalDataRequest):
     """Update clinical data for a session"""
-    if request.session_id not in sessions:
+    session = chat_db.get_session(request.session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[request.session_id]
     
     # Convert to Persian keys if needed
     clinical_data = request.clinical_data
@@ -450,7 +462,8 @@ def update_clinical_data(request: UpdateClinicalDataRequest):
                 persian_data[key] = value
         clinical_data = persian_data
     
-    session['clinical_data'] = clinical_data
+    # Update clinical data in database
+    chat_db.update_session_clinical_data(request.session_id, clinical_data)
     
     return {
         "success": True,
@@ -461,22 +474,23 @@ def update_clinical_data(request: UpdateClinicalDataRequest):
 @app.get("/api/stats/{session_id}")
 def get_stats(session_id: str):
     """Get statistics for a session"""
-    if session_id not in sessions:
+    session = chat_db.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
     return {
         "success": True,
         "session_id": session_id,
-        "stats": sessions[session_id]['stats']
+        "stats": session['stats']
     }
 
 @app.delete("/api/chat/session/{session_id}")
 def delete_session(session_id: str):
     """Delete a chat session"""
-    if session_id not in sessions:
+    deleted = chat_db.delete_session(session_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    del sessions[session_id]
     return {
         "success": True,
         "message": "Session deleted"

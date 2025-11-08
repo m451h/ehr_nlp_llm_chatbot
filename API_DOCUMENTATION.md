@@ -194,7 +194,68 @@ Get full chat history for a session.
 
 ---
 
-### 6. Generate Educational Note
+### 6. List All Chat Sessions
+
+**GET** `/api/chat/sessions`
+
+Get a list of all chat sessions (for sidebar/history display). This endpoint returns a summary of all sessions, sorted by most recently updated first.
+
+**Response:**
+```json
+{
+  "success": true,
+  "total": 3,
+  "sessions": [
+    {
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "condition_id": "cond_type_2_diabetes",
+      "condition_name": "دیابت نوع ۲",
+      "preview": "چه غذاهایی برای دیابت خوبه؟",
+      "message_count": 4,
+      "created_at": "2024-01-15T10:30:00",
+      "last_updated": "2024-01-15T10:35:00",
+      "stats": {
+        "total_queries": 2,
+        "high_confidence": 2,
+        "medium_confidence": 0,
+        "low_confidence": 0
+      }
+    },
+    {
+      "session_id": "660e8400-e29b-41d4-a716-446655440001",
+      "condition_id": "cond_hypertension",
+      "condition_name": "فشار خون بالا",
+      "preview": "چت جدید",
+      "message_count": 0,
+      "created_at": "2024-01-15T09:00:00",
+      "last_updated": "2024-01-15T09:00:00",
+      "stats": {
+        "total_queries": 0,
+        "high_confidence": 0,
+        "medium_confidence": 0,
+        "low_confidence": 0
+      }
+    }
+  ]
+}
+```
+
+**Response Fields:**
+- `sessions`: Array of session summaries
+  - `session_id`: Unique session identifier
+  - `condition_id`: Medical condition ID
+  - `condition_name`: Display name of the condition (Persian)
+  - `preview`: First 50 characters of the first user message, or "چت جدید" if no messages
+  - `message_count`: Total number of messages in the session
+  - `created_at`: ISO timestamp when session was created
+  - `last_updated`: ISO timestamp when session was last updated
+  - `stats`: Session statistics
+
+**Note:** This endpoint is perfect for building a sidebar that displays all user chat history. The sessions are sorted by `last_updated` (newest first).
+
+---
+
+### 7. Generate Educational Note
 
 **POST** `/api/chat/educational-note`
 

@@ -80,6 +80,11 @@ class EHRChatbotAPI {
         return await this.request(`/api/chat/history/${sessionId}`);
     }
 
+    // GET /api/chat/sessions
+    async listAllSessions() {
+        return await this.request('/api/chat/sessions');
+    }
+
     // POST /api/chat/educational-note
     async generateEducationalNote(conditionId, clinicalData = null) {
         return await this.request('/api/chat/educational-note', {
