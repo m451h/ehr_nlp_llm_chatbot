@@ -73,6 +73,9 @@ Get all available medical conditions.
 
 Start a new chat session for a specific condition.
 
+**Required Headers:**
+- `X-User-ID`: 13-digit integer user ID from your backend authentication system
+
 **Request Body:**
 ```json
 {
@@ -117,6 +120,9 @@ Start a new chat session for a specific condition.
 
 Send a question to the chatbot.
 
+**Required Headers:**
+- `X-User-ID`: 13-digit integer user ID (must match the session owner)
+
 **Request Body:**
 ```json
 {
@@ -160,6 +166,9 @@ Send a question to the chatbot.
 
 Get full chat history for a session.
 
+**Required Headers:**
+- `X-User-ID`: 13-digit integer user ID (must match the session owner)
+
 **Response:**
 ```json
 {
@@ -198,7 +207,10 @@ Get full chat history for a session.
 
 **GET** `/api/chat/sessions`
 
-Get a list of all chat sessions (for sidebar/history display). This endpoint returns a summary of all sessions, sorted by most recently updated first.
+Get a list of all chat sessions for the current user (for sidebar/history display). This endpoint returns a summary of sessions belonging to the authenticated user, sorted by most recently updated first.
+
+**Required Headers:**
+- `X-User-ID`: 13-digit integer user ID
 
 **Response:**
 ```json
@@ -291,6 +303,9 @@ Generate an educational note for a condition without starting a chat.
 
 Update clinical data for an existing session.
 
+**Required Headers:**
+- `X-User-ID`: 13-digit integer user ID (must match the session owner)
+
 **Request Body:**
 ```json
 {
@@ -324,6 +339,9 @@ Update clinical data for an existing session.
 
 Get statistics for a session.
 
+**Required Headers:**
+- `X-User-ID`: 13-digit integer user ID (must match the session owner)
+
 **Response:**
 ```json
 {
@@ -345,6 +363,9 @@ Get statistics for a session.
 **DELETE** `/api/chat/session/{session_id}`
 
 Delete a chat session.
+
+**Required Headers:**
+- `X-User-ID`: 13-digit integer user ID (must match the session owner)
 
 **Response:**
 ```json
@@ -368,8 +389,9 @@ All endpoints may return errors in the following format:
 
 **Common HTTP Status Codes:**
 - `200`: Success
-- `400`: Bad Request (invalid parameters)
-- `404`: Not Found (session not found, etc.)
+- `400`: Bad Request (invalid parameters, invalid user ID format)
+- `401`: Unauthorized (missing or invalid user ID)
+- `404`: Not Found (session not found, or access denied - session belongs to another user)
 - `500`: Internal Server Error
 
 ---
@@ -506,12 +528,285 @@ app.add_middleware(
 
 ## Session Management
 
-Sessions are stored in-memory by default. In production, you may want to:
+Sessions are stored in SQLite database and are persistent across server restarts. Each session is associated with a specific user ID.
 
-1. Use Redis for session storage
-2. Use a database for persistence
-3. Add session expiration
-4. Add authentication/authorization
+---
+
+## User Authentication & Isolation
+
+The API requires user authentication via the `X-User-ID` header. All chat sessions are user-specific, meaning:
+
+- Each user can only access their own chat sessions
+- Sessions are isolated between different users
+- The `user_id` must be a **13-digit integer** provided by your backend authentication system
+
+### Required Header
+
+All session-related endpoints require the `X-User-ID` header:
+
+```http
+X-User-ID: 1234567890123
+```
+
+**Important:** The user ID must be exactly 13 digits. This ID should come from your backend authentication system when a user logs in.
+
+### Testing User Authentication
+
+Here's how to verify that user authentication and isolation are working correctly:
+
+#### 1. Test with Valid User ID
+
+**Start a chat session for User 1:**
+```bash
+curl -X POST http://localhost:8000/api/chat/start \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: 1234567890123" \
+  -d '{
+    "condition_id": "cond_type_2_diabetes",
+    "generate_educational_note": true
+  }'
+```
+
+**Expected Response:** Success with a `session_id`
+```json
+{
+  "success": true,
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "condition_id": "cond_type_2_diabetes",
+  "condition_name": "دیابت نوع ۲"
+}
+```
+
+**Save the `session_id` for the next tests.**
+
+#### 2. Test Accessing Own Session (Should Work)
+
+**Get chat history with the same user ID:**
+```bash
+curl -X GET "http://localhost:8000/api/chat/history/550e8400-e29b-41d4-a716-446655440000" \
+  -H "X-User-ID: 1234567890123"
+```
+
+**Expected Response:** Success - returns the chat history
+
+#### 3. Test Accessing Another User's Session (Should Fail)
+
+**Try to access the same session with a different user ID:**
+```bash
+curl -X GET "http://localhost:8000/api/chat/history/550e8400-e29b-41d4-a716-446655440000" \
+  -H "X-User-ID: 9876543210987"
+```
+
+**Expected Response:** Error 404
+```json
+{
+  "detail": "Session not found or access denied"
+}
+```
+
+#### 4. Test Missing User ID (Should Fail)
+
+**Try to start a chat without the header:**
+```bash
+curl -X POST http://localhost:8000/api/chat/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "condition_id": "cond_type_2_diabetes"
+  }'
+```
+
+**Expected Response:** Error 401
+```json
+{
+  "detail": "User ID is required. Please provide X-User-ID header with a 13-digit integer."
+}
+```
+
+#### 5. Test Invalid User ID Format (Should Fail)
+
+**Try with a non-13-digit user ID:**
+```bash
+curl -X POST http://localhost:8000/api/chat/start \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: 12345" \
+  -d '{
+    "condition_id": "cond_type_2_diabetes"
+  }'
+```
+
+**Expected Response:** Error 400
+```json
+{
+  "detail": "User ID must be a 13-digit integer. Received: 12345"
+}
+```
+
+#### 6. Test User Isolation - List Sessions
+
+**Create sessions for two different users:**
+
+**User 1:**
+```bash
+curl -X POST http://localhost:8000/api/chat/start \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: 1111111111111" \
+  -d '{"condition_id": "cond_type_2_diabetes"}'
+```
+
+**User 2:**
+```bash
+curl -X POST http://localhost:8000/api/chat/start \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: 2222222222222" \
+  -d '{"condition_id": "cond_hypertension"}'
+```
+
+**List sessions for User 1:**
+```bash
+curl -X GET "http://localhost:8000/api/chat/sessions" \
+  -H "X-User-ID: 1111111111111"
+```
+
+**Expected Response:** Only User 1's sessions appear
+```json
+{
+  "success": true,
+  "total": 1,
+  "sessions": [
+    {
+      "session_id": "...",
+      "condition_id": "cond_type_2_diabetes",
+      ...
+    }
+  ]
+}
+```
+
+**List sessions for User 2:**
+```bash
+curl -X GET "http://localhost:8000/api/chat/sessions" \
+  -H "X-User-ID: 2222222222222"
+```
+
+**Expected Response:** Only User 2's sessions appear (different from User 1)
+
+#### 7. Test Query with Wrong User ID (Should Fail)
+
+**Create a session for User 1, then try to query it as User 2:**
+```bash
+# First, create session as User 1
+SESSION_ID="<session_id_from_previous_response>"
+
+# Try to query as User 2 (should fail)
+curl -X POST http://localhost:8000/api/chat/query \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: 2222222222222" \
+  -d "{
+    \"session_id\": \"$SESSION_ID\",
+    \"query\": \"test question\"
+  }"
+```
+
+**Expected Response:** Error 404
+```json
+{
+  "detail": "Session not found or access denied"
+}
+```
+
+### Complete Test Script
+
+Here's a complete test script you can run to verify everything works:
+
+```bash
+#!/bin/bash
+
+BASE_URL="http://localhost:8000"
+USER_1="1111111111111"
+USER_2="2222222222222"
+
+echo "=== Test 1: Start chat for User 1 ==="
+RESPONSE1=$(curl -s -X POST "$BASE_URL/api/chat/start" \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: $USER_1" \
+  -d '{"condition_id": "cond_type_2_diabetes"}')
+SESSION_ID1=$(echo $RESPONSE1 | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+echo "User 1 Session ID: $SESSION_ID1"
+echo ""
+
+echo "=== Test 2: Start chat for User 2 ==="
+RESPONSE2=$(curl -s -X POST "$BASE_URL/api/chat/start" \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: $USER_2" \
+  -d '{"condition_id": "cond_hypertension"}')
+SESSION_ID2=$(echo $RESPONSE2 | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+echo "User 2 Session ID: $SESSION_ID2"
+echo ""
+
+echo "=== Test 3: User 1 accesses own session (should work) ==="
+curl -s -X GET "$BASE_URL/api/chat/history/$SESSION_ID1" \
+  -H "X-User-ID: $USER_1" | grep -q "success" && echo "✓ PASS" || echo "✗ FAIL"
+echo ""
+
+echo "=== Test 4: User 2 tries to access User 1's session (should fail) ==="
+curl -s -X GET "$BASE_URL/api/chat/history/$SESSION_ID1" \
+  -H "X-User-ID: $USER_2" | grep -q "access denied" && echo "✓ PASS" || echo "✗ FAIL"
+echo ""
+
+echo "=== Test 5: List sessions for User 1 ==="
+curl -s -X GET "$BASE_URL/api/chat/sessions" \
+  -H "X-User-ID: $USER_1" | grep -q "$SESSION_ID1" && echo "✓ PASS" || echo "✗ FAIL"
+echo ""
+
+echo "=== Test 6: List sessions for User 2 (should not see User 1's session) ==="
+curl -s -X GET "$BASE_URL/api/chat/sessions" \
+  -H "X-User-ID: $USER_2" | grep -q "$SESSION_ID1" && echo "✗ FAIL (User 2 can see User 1's session!)" || echo "✓ PASS"
+echo ""
+
+echo "=== Test 7: Missing User ID (should fail) ==="
+curl -s -X POST "$BASE_URL/api/chat/start" \
+  -H "Content-Type: application/json" \
+  -d '{"condition_id": "cond_type_2_diabetes"}' | grep -q "User ID is required" && echo "✓ PASS" || echo "✗ FAIL"
+echo ""
+
+echo "Tests completed!"
+```
+
+### Integration with Frontend
+
+When integrating with your frontend, make sure to:
+
+1. **Get user_id from your backend authentication system** after login
+2. **Include X-User-ID header in all API requests:**
+   ```javascript
+   const userId = getUserIdFromAuth(); // Your function to get user ID
+   
+   fetch('/api/chat/start', {
+     method: 'POST',
+     headers: {
+       'Content-Type': 'application/json',
+       'X-User-ID': userId.toString() // Must be 13 digits
+     },
+     body: JSON.stringify({
+       condition_id: 'cond_type_2_diabetes'
+     })
+   });
+   ```
+
+3. **Handle authentication errors:**
+   ```javascript
+   try {
+     const response = await fetch('/api/chat/sessions', {
+       headers: { 'X-User-ID': userId }
+     });
+     if (response.status === 401) {
+       // User ID missing or invalid - redirect to login
+       window.location.href = '/login';
+     }
+   } catch (error) {
+     console.error('API Error:', error);
+   }
+   ```
 
 ---
 
@@ -526,15 +821,21 @@ You can test the API using:
    ```bash
    curl -X POST http://localhost:8000/api/chat/start \
      -H "Content-Type: application/json" \
+     -H "X-User-ID: 1234567890123" \
      -d '{"condition_id": "cond_type_2_diabetes", "generate_educational_note": true}'
    ```
+   
+   **Note:** Don't forget to include the `X-User-ID` header with a 13-digit integer!
 
 ---
 
 ## Notes
 
 - The chatbot handler is loaded once at startup and reused for all requests
-- Sessions are stored in-memory (not persistent across server restarts)
+- Sessions are stored in SQLite database and persist across server restarts
+- **All sessions are user-specific** - users can only access their own chat sessions
+- The `X-User-ID` header is required for all session-related endpoints
+- User ID must be a 13-digit integer provided by your backend authentication system
 - Clinical data is used to personalize LLM responses
 - The API automatically converts English keys to Persian keys for clinical data
 - All text responses are in Persian (Farsi)

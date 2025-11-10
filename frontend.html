@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EHR Chatbot - API Test Frontend</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .config {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+
+        .config input {
+            padding: 8px 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .config input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 20px;
+        }
+
+        .sidebar {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            height: fit-content;
+        }
+
+        .sidebar h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+            margin-top: 10px;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .chat-container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 200px);
+            min-height: 600px;
+        }
+
+        .chat-header {
+            padding: 20px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .chat-header h2 {
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .chat-status {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .message.user {
+            align-items: flex-end;
+        }
+
+        .message.bot {
+            align-items: flex-start;
+        }
+
+        .message-bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
+        }
+
+        .message.user .message-bubble {
+            background: #667eea;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.bot .message-bubble {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message-meta {
+            font-size: 11px;
+            color: #999;
+            margin-top: 5px;
+            padding: 0 5px;
+        }
+
+        .educational-note {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+
+        .educational-note h3 {
+            color: #856404;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .educational-note-content {
+            color: #856404;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .chat-input-container {
+            padding: 20px;
+            border-top: 2px solid #f0f0f0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #ddd;
+            border-radius: 25px;
+            font-size: 14px;
+        }
+
+        .chat-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .chat-send-btn {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .chat-send-btn:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+
+        .chat-send-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border: 1px solid #f5c6cb;
+        }
+
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 12px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border: 1px solid #c3e6cb;
+        }
+
+        .stats {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .stat-item {
+            flex: 1;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .condition-select {
+            margin-bottom: 15px;
+        }
+
+        .custom-condition {
+            margin-top: 10px;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏥 EHR Chatbot - API Test Frontend</h1>
+            <div class="config">
+                <input type="text" id="apiUrl" placeholder="API URL" value="http://localhost:8000">
+                <input type="text" id="userId" placeholder="User ID (13 digits)" value="1234567890123" maxlength="13">
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <h2>⚙️ Configuration</h2>
+                
+                <div class="form-group">
+                    <label>Condition</label>
+                    <select id="conditionSelect">
+                        <option value="">Loading...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="useCustomCondition"> Use Custom Condition ID
+                    </label>
+                    <input type="text" id="customCondition" class="custom-condition hidden" placeholder="e.g., cond_unknown_disease">
+                </div>
+
+                <div class="form-group">
+                    <label>Age</label>
+                    <input type="text" id="age" value="45 سال">
+                </div>
+
+                <div class="form-group">
+                    <label>Gender</label>
+                    <select id="gender">
+                        <option value="مرد">مرد</option>
+                        <option value="زن">زن</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Weight</label>
+                    <input type="text" id="weight" value="78 کیلوگرم">
+                </div>
+
+                <div class="form-group">
+                    <label>Height</label>
+                    <input type="text" id="height" value="175 سانتی‌متر">
+                </div>
+
+                <button class="btn btn-primary" id="startChatBtn">🆕 Start New Chat</button>
+                <button class="btn btn-secondary" id="loadSessionsBtn">📋 Load Sessions</button>
+
+                <div id="stats" class="stats hidden">
+                    <div class="stat-item">
+                        <div class="stat-value" id="statTotal">0</div>
+                        <div class="stat-label">Total Queries</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statHigh">0</div>
+                        <div class="stat-label">High Confidence</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statMedium">0</div>
+                        <div class="stat-label">Medium</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-container">
+                <div class="chat-header">
+                    <h2>💬 Chat</h2>
+                    <div class="chat-status" id="chatStatus">Not started</div>
+                </div>
+
+                <div class="chat-messages" id="chatMessages">
+                    <div style="text-align: center; color: #999; padding: 40px;">
+                        Start a new chat to begin conversation
+                    </div>
+                </div>
+
+                <div class="chat-input-container">
+                    <input 
+                        type="text" 
+                        id="chatInput" 
+                        class="chat-input" 
+                        placeholder="Type your question here..."
+                        disabled
+                    >
+                    <button class="chat-send-btn" id="sendBtn" disabled>Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API Configuration
+        let apiUrl = 'http://localhost:8000';
+        let userId = '1234567890123';
+        let sessionId = null;
+        let conditions = {};
+
+        // DOM Elements
+        const apiUrlInput = document.getElementById('apiUrl');
+        const userIdInput = document.getElementById('userId');
+        const conditionSelect = document.getElementById('conditionSelect');
+        const customConditionCheck = document.getElementById('useCustomCondition');
+        const customConditionInput = document.getElementById('customCondition');
+        const startChatBtn = document.getElementById('startChatBtn');
+        const loadSessionsBtn = document.getElementById('loadSessionsBtn');
+        const chatInput = document.getElementById('chatInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const chatMessages = document.getElementById('chatMessages');
+        const chatStatus = document.getElementById('chatStatus');
+
+        // Update API config when inputs change
+        apiUrlInput.addEventListener('change', (e) => {
+            apiUrl = e.target.value;
+        });
+
+        userIdInput.addEventListener('change', (e) => {
+            userId = e.target.value;
+        });
+
+        // Toggle custom condition input
+        customConditionCheck.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                customConditionInput.classList.remove('hidden');
+                conditionSelect.disabled = true;
+            } else {
+                customConditionInput.classList.add('hidden');
+                conditionSelect.disabled = false;
+            }
+        });
+
+        // Load conditions on page load
+        async function loadConditions() {
+            try {
+                const response = await fetch(`${apiUrl}/api/conditions`, {
+                    headers: {
+                        'X-User-ID': userId
+                    }
+                });
+                const data = await response.json();
+                
+                if (data.success && data.conditions) {
+                    conditions = data.conditions;
+                    conditionSelect.innerHTML = '<option value="">Select a condition...</option>';
+                    for (const [id, name] of Object.entries(conditions)) {
+                        const option = document.createElement('option');
+                        option.value = id;
+                        option.textContent = `${name} (${id})`;
+                        conditionSelect.appendChild(option);
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading conditions:', error);
+                conditionSelect.innerHTML = '<option value="">Error loading conditions</option>';
+            }
+        }
+
+        // Start new chat
+        async function startChat() {
+            const conditionId = customConditionCheck.checked 
+                ? customConditionInput.value.trim()
+                : conditionSelect.value;
+
+            if (!conditionId) {
+                alert('Please select or enter a condition ID');
+                return;
+            }
+
+            if (userId.length !== 13) {
+                alert('User ID must be exactly 13 digits');
+                return;
+            }
+
+            startChatBtn.disabled = true;
+            startChatBtn.innerHTML = '<span class="loading"></span> Starting...';
+
+            const clinicalData = {
+                age: document.getElementById('age').value,
+                gender: document.getElementById('gender').value,
+                weight: document.getElementById('weight').value,
+                height: document.getElementById('height').value
+            };
+
+            try {
+                const response = await fetch(`${apiUrl}/api/chat/start`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-User-ID': userId
+                    },
+                    body: JSON.stringify({
+                        condition_id: conditionId,
+                        clinical_data: clinicalData,
+                        generate_educational_note: true
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    sessionId = data.session_id;
+                    chatStatus.textContent = `Active - ${data.condition_name} ${data.condition_in_database ? '(In DB)' : '(Fallback Mode)'}`;
+                    chatInput.disabled = false;
+                    sendBtn.disabled = false;
+                    chatMessages.innerHTML = '';
+
+                    // Show educational note if available
+                    if (data.educational_note && data.educational_note.note) {
+                        const noteDiv = document.createElement('div');
+                        noteDiv.className = 'educational-note';
+                        noteDiv.innerHTML = `
+                            <h3>📚 Educational Note</h3>
+                            <div class="educational-note-content">${data.educational_note.note.replace(/\n/g, '<br>')}</div>
+                        `;
+                        chatMessages.appendChild(noteDiv);
+                    }
+
+                    addMessage('bot', 'سلام! چطور می‌تونم کمکتون کنم؟', 'system');
+                } else {
+                    alert(`Error: ${data.detail || 'Failed to start chat'}`);
+                }
+            } catch (error) {
+                console.error('Error starting chat:', error);
+                alert(`Error: ${error.message}`);
+            } finally {
+                startChatBtn.disabled = false;
+                startChatBtn.innerHTML = '🆕 Start New Chat';
+            }
+        }
+
+        // Send message
+        async function sendMessage() {
+            const query = chatInput.value.trim();
+            if (!query || !sessionId) return;
+
+            // Add user message to UI
+            addMessage('user', query);
+            chatInput.value = '';
+            chatInput.disabled = true;
+            sendBtn.disabled = true;
+            sendBtn.innerHTML = '<span class="loading"></span>';
+
+            try {
+                const response = await fetch(`${apiUrl}/api/chat/query`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-User-ID': userId
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        query: query
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    addMessage('bot', data.message, data.confidence_level, data.response_type);
+                    updateStats(data.stats);
+                } else {
+                    addMessage('bot', `Error: ${data.detail || 'Failed to get response'}`, 'error');
+                }
+            } catch (error) {
+                console.error('Error sending message:', error);
+                addMessage('bot', `Error: ${error.message}`, 'error');
+            } finally {
+                chatInput.disabled = false;
+                sendBtn.disabled = false;
+                sendBtn.innerHTML = 'Send';
+                chatInput.focus();
+            }
+        }
+
+        // Add message to chat
+        function addMessage(role, content, confidence = null, responseType = null) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+
+            const bubble = document.createElement('div');
+            bubble.className = 'message-bubble';
+            bubble.textContent = content;
+
+            const meta = document.createElement('div');
+            meta.className = 'message-meta';
+            if (confidence) {
+                meta.textContent = `${confidence}${responseType ? ` • ${responseType}` : ''}`;
+            }
+
+            messageDiv.appendChild(bubble);
+            messageDiv.appendChild(meta);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Update statistics
+        function updateStats(stats) {
+            if (!stats) return;
+
+            document.getElementById('statTotal').textContent = stats.total_queries || 0;
+            document.getElementById('statHigh').textContent = stats.high_confidence || 0;
+            document.getElementById('statMedium').textContent = stats.medium_confidence || 0;
+            document.getElementById('stats').classList.remove('hidden');
+        }
+
+        // Load sessions
+        async function loadSessions() {
+            try {
+                const response = await fetch(`${apiUrl}/api/chat/sessions`, {
+                    headers: {
+                        'X-User-ID': userId
+                    }
+                });
+                const data = await response.json();
+                
+                if (data.success && data.sessions && data.sessions.length > 0) {
+                    const sessionList = data.sessions.map(s => 
+                        `${s.condition_name} (${s.session_id.substring(0, 8)}...)`
+                    ).join('\n');
+                    alert(`Found ${data.sessions.length} sessions:\n\n${sessionList}`);
+                } else {
+                    alert('No sessions found');
+                }
+            } catch (error) {
+                console.error('Error loading sessions:', error);
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        // Event listeners
+        startChatBtn.addEventListener('click', startChat);
+        loadSessionsBtn.addEventListener('click', loadSessions);
+        sendBtn.addEventListener('click', sendMessage);
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !sendBtn.disabled) {
+                sendMessage();
+            }
+        });
+
+        // Initialize
+        loadConditions();
+    </script>
+</body>
+</html>
+

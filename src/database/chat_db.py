@@ -24,9 +24,18 @@ class ChatDatabase:
         self._init_database()
     
     def _get_connection(self):
-        """Get database connection"""
-        conn = sqlite3.connect(self.db_path)
+        """Get database connection with concurrency-friendly settings"""
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=30,
+            check_same_thread=False
+        )
         conn.row_factory = sqlite3.Row  # Enable column access by name
+        # Improve concurrent access behaviour
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=30000;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
     
     def _init_database(self):
@@ -38,6 +47,7 @@ class ChatDatabase:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
                 condition_id TEXT NOT NULL,
                 condition_name TEXT NOT NULL,
                 clinical_data TEXT,  -- JSON string
@@ -50,6 +60,21 @@ class ChatDatabase:
                 updated_at TEXT NOT NULL
             )
         """)
+        
+        # Add user_id column if it doesn't exist (migration for existing databases)
+        # Check if column exists by trying to query it
+        try:
+            cursor.execute("SELECT user_id FROM sessions LIMIT 1")
+        except sqlite3.OperationalError:
+            # Column doesn't exist, add it
+            try:
+                cursor.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+                conn.commit()
+                # Note: Existing records will have NULL user_id and won't be accessible
+                # via the new API which requires authentication. This is expected behavior.
+            except sqlite3.OperationalError:
+                # Column might have been added by another process, ignore
+                pass
         
         # Create messages table
         cursor.execute("""
@@ -75,12 +100,18 @@ class ChatDatabase:
             ON sessions(updated_at)
         """)
         
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sessions_user_id 
+            ON sessions(user_id)
+        """)
+        
         conn.commit()
         conn.close()
     
     def create_session(
         self,
         session_id: str,
+        user_id: int,
         condition_id: str,
         condition_name: str,
         clinical_data: Optional[Dict] = None,
@@ -91,6 +122,7 @@ class ChatDatabase:
         
         Args:
             session_id: Unique session identifier
+            user_id: User ID (13-digit integer from backend)
             condition_id: Medical condition ID
             condition_name: Display name of condition
             clinical_data: Clinical data dictionary
@@ -107,12 +139,13 @@ class ChatDatabase:
         try:
             cursor.execute("""
                 INSERT INTO sessions (
-                    session_id, condition_id, condition_name,
+                    session_id, user_id, condition_id, condition_name,
                     clinical_data, educational_note,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_id,
+                user_id,
                 condition_id,
                 condition_name,
                 json.dumps(clinical_data) if clinical_data else None,
@@ -129,22 +162,23 @@ class ChatDatabase:
         finally:
             conn.close()
     
-    def get_session(self, session_id: str) -> Optional[Dict]:
+    def get_session(self, session_id: str, user_id: int) -> Optional[Dict]:
         """
-        Get a session by ID
+        Get a session by ID for a specific user
         
         Args:
             session_id: Session identifier
+            user_id: User ID (13-digit integer from backend)
             
         Returns:
-            Session dictionary or None if not found
+            Session dictionary or None if not found or doesn't belong to user
         """
         conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT * FROM sessions WHERE session_id = ?
-        """, (session_id,))
+            SELECT * FROM sessions WHERE session_id = ? AND user_id = ?
+        """, (session_id, user_id))
         
         row = cursor.fetchone()
         conn.close()
@@ -181,12 +215,13 @@ class ChatDatabase:
         
         return session
     
-    def update_session_stats(self, session_id: str, stats: Dict):
+    def update_session_stats(self, session_id: str, user_id: int, stats: Dict):
         """
         Update session statistics
         
         Args:
             session_id: Session identifier
+            user_id: User ID (13-digit integer from backend)
             stats: Statistics dictionary
         """
         conn = self._get_connection()
@@ -199,25 +234,27 @@ class ChatDatabase:
                 stats_medium_confidence = ?,
                 stats_low_confidence = ?,
                 updated_at = ?
-            WHERE session_id = ?
+            WHERE session_id = ? AND user_id = ?
         """, (
             stats.get('total_queries', 0),
             stats.get('high_confidence', 0),
             stats.get('medium_confidence', 0),
             stats.get('low_confidence', 0),
             datetime.now().isoformat(),
-            session_id
+            session_id,
+            user_id
         ))
         
         conn.commit()
         conn.close()
     
-    def update_session_educational_note(self, session_id: str, educational_note: Dict):
+    def update_session_educational_note(self, session_id: str, user_id: int, educational_note: Dict):
         """
         Update educational note for a session
         
         Args:
             session_id: Session identifier
+            user_id: User ID (13-digit integer from backend)
             educational_note: Educational note dictionary
         """
         conn = self._get_connection()
@@ -227,34 +264,36 @@ class ChatDatabase:
             UPDATE sessions SET
                 educational_note = ?,
                 updated_at = ?
-            WHERE session_id = ?
+            WHERE session_id = ? AND user_id = ?
         """, (
             json.dumps(educational_note),
             datetime.now().isoformat(),
-            session_id
+            session_id,
+            user_id
         ))
         
         conn.commit()
         conn.close()
     
-    def update_session_updated_at(self, session_id: str):
+    def update_session_updated_at(self, session_id: str, user_id: int):
         """Update the updated_at timestamp for a session"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute("""
-            UPDATE sessions SET updated_at = ? WHERE session_id = ?
-        """, (datetime.now().isoformat(), session_id))
+            UPDATE sessions SET updated_at = ? WHERE session_id = ? AND user_id = ?
+        """, (datetime.now().isoformat(), session_id, user_id))
         
         conn.commit()
         conn.close()
     
-    def update_session_clinical_data(self, session_id: str, clinical_data: Dict):
+    def update_session_clinical_data(self, session_id: str, user_id: int, clinical_data: Dict):
         """
         Update clinical data for a session
         
         Args:
             session_id: Session identifier
+            user_id: User ID (13-digit integer from backend)
             clinical_data: Clinical data dictionary
         """
         conn = self._get_connection()
@@ -264,22 +303,26 @@ class ChatDatabase:
             UPDATE sessions SET
                 clinical_data = ?,
                 updated_at = ?
-            WHERE session_id = ?
+            WHERE session_id = ? AND user_id = ?
         """, (
             json.dumps(clinical_data),
             datetime.now().isoformat(),
-            session_id
+            session_id,
+            user_id
         ))
         
         conn.commit()
         conn.close()
     
-    def list_all_sessions(self) -> List[Dict]:
+    def list_all_sessions(self, user_id: int) -> List[Dict]:
         """
-        Get list of all sessions (for sidebar/history)
+        Get list of all sessions for a specific user (for sidebar/history)
+        
+        Args:
+            user_id: User ID (13-digit integer from backend)
         
         Returns:
-            List of session summaries
+            List of session summaries for the user
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -298,9 +341,10 @@ class ChatDatabase:
                 COUNT(m.message_id) as message_count
             FROM sessions s
             LEFT JOIN messages m ON s.session_id = m.session_id
+            WHERE s.user_id = ?
             GROUP BY s.session_id
             ORDER BY s.updated_at DESC
-        """)
+        """, (user_id,))
         
         rows = cursor.fetchall()
         conn.close()
@@ -377,15 +421,24 @@ class ChatDatabase:
             INSERT INTO messages (session_id, role, content, confidence_level, created_at)
             VALUES (?, ?, ?, ?, ?)
         """, (session_id, role, content, confidence_level, now))
-        
         message_id = cursor.lastrowid
-        
-        # Update session updated_at timestamp
-        self.update_session_updated_at(session_id)
-        
+
+        # Update session timestamp within the same transaction to avoid extra locks
+        cursor.execute(
+            "SELECT user_id FROM sessions WHERE session_id = ?",
+            (session_id,)
+        )
+        user_row = cursor.fetchone()
+
+        if user_row:
+            cursor.execute(
+                "UPDATE sessions SET updated_at = ? WHERE session_id = ? AND user_id = ?",
+                (datetime.now().isoformat(), session_id, user_row['user_id'])
+            )
+
         conn.commit()
         conn.close()
-        
+
         return message_id
     
     def get_messages(self, session_id: str) -> List[Dict]:
@@ -424,12 +477,13 @@ class ChatDatabase:
         
         return messages
     
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, user_id: int) -> bool:
         """
         Delete a session and all its messages
         
         Args:
             session_id: Session identifier
+            user_id: User ID (13-digit integer from backend)
             
         Returns:
             True if deleted, False if not found
@@ -437,7 +491,7 @@ class ChatDatabase:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        cursor.execute("DELETE FROM sessions WHERE session_id = ? AND user_id = ?", (session_id, user_id))
         deleted = cursor.rowcount > 0
         
         conn.commit()
@@ -445,17 +499,18 @@ class ChatDatabase:
         
         return deleted
     
-    def get_full_session(self, session_id: str) -> Optional[Dict]:
+    def get_full_session(self, session_id: str, user_id: int) -> Optional[Dict]:
         """
         Get full session with all messages
         
         Args:
             session_id: Session identifier
+            user_id: User ID (13-digit integer from backend)
             
         Returns:
             Complete session dictionary with messages, or None if not found
         """
-        session = self.get_session(session_id)
+        session = self.get_session(session_id, user_id)
         if not session:
             return None
         

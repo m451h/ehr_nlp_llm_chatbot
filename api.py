@@ -12,7 +12,7 @@ For production:
 import sys
 sys.path.insert(0, '.')
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -100,6 +100,53 @@ DEFAULT_CLINICAL_DATA = {
 }
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_user_id(request: Request, x_user_id: Optional[str] = Header(None)) -> int:
+    """
+    Extract user_id from request headers.
+    The backend should send user_id in the 'X-User-ID' header as a 13-digit integer.
+    
+    Args:
+        request: FastAPI request object
+        x_user_id: User ID from X-User-ID header
+        
+    Returns:
+        User ID as integer
+        
+    Raises:
+        HTTPException: If user_id is missing or invalid
+    """
+    # Try to get from X-User-ID header first
+    user_id_str = x_user_id
+    
+    # If not in header, try to get from request headers directly
+    if not user_id_str:
+        user_id_str = request.headers.get('X-User-ID') or request.headers.get('x-user-id')
+    
+    if not user_id_str:
+        raise HTTPException(
+            status_code=401,
+            detail="User ID is required. Please provide X-User-ID header with a 13-digit integer."
+        )
+    
+    try:
+        user_id = int(user_id_str)
+        # Validate it's a 13-digit integer
+        if len(str(user_id)) != 13:
+            raise HTTPException(
+                status_code=400,
+                detail=f"User ID must be a 13-digit integer. Received: {user_id_str}"
+            )
+        return user_id
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user ID format. Must be a 13-digit integer. Received: {user_id_str}"
+        )
+
+# ============================================================================
 # PYDANTIC MODELS
 # ============================================================================
 
@@ -170,17 +217,27 @@ def get_conditions():
         raise HTTPException(status_code=500, detail=f"Failed to get conditions: {str(e)}")
 
 @app.post("/api/chat/start")
-def start_chat(request: StartChatRequest):
+def start_chat(request: StartChatRequest, req: Request, x_user_id: Optional[str] = Header(None)):
     """Start a new chat session for a condition"""
     try:
-        # Verify condition exists
+        # Get user_id from headers
+        user_id = get_user_id(req, x_user_id)
+        
+        # Check if condition exists in database
         conditions = get_available_conditions()
-        if request.condition_id not in conditions:
-            raise HTTPException(status_code=400, detail=f"Invalid condition_id: {request.condition_id}")
+        condition_exists = request.condition_id in conditions
         
         # Create new session
         session_id = str(uuid.uuid4())
-        condition_name = conditions[request.condition_id]
+        
+        # Use condition name from database if exists, otherwise use condition_id as name
+        if condition_exists:
+            condition_name = conditions[request.condition_id]
+        else:
+            # Convert condition_id to a readable name (remove 'cond_' prefix if present)
+            condition_name = request.condition_id.replace('cond_', '').replace('_', ' ')
+            # Capitalize first letter of each word
+            condition_name = ' '.join(word.capitalize() for word in condition_name.split())
         
         # Use provided clinical data or default
         clinical_data = request.clinical_data or DEFAULT_CLINICAL_DATA
@@ -209,9 +266,11 @@ def start_chat(request: StartChatRequest):
                     persian_data[key] = value
             clinical_data = persian_data
         
-        # Generate educational note if requested
+        # Generate educational note
+        # For unknown conditions, ALWAYS generate educational note with patient JSON data
+        # For known conditions, generate if requested
         educational_note = None
-        if request.generate_educational_note:
+        if not condition_exists or request.generate_educational_note:
             note = generate_condition_note(
                 condition_name=condition_name,
                 clinical_data=clinical_data
@@ -223,21 +282,32 @@ def start_chat(request: StartChatRequest):
                     'note': note
                 }
         
-        # Create session in database
+        # Create session in database with user_id
         chat_db.create_session(
             session_id=session_id,
+            user_id=user_id,
             condition_id=request.condition_id,
             condition_name=condition_name,
             clinical_data=clinical_data,
             educational_note=educational_note
         )
-        
+
+        # Store educational note as the first bot message for session history
+        if educational_note and educational_note.get('note'):
+            chat_db.add_message(
+                session_id=session_id,
+                role='bot',
+                content=educational_note['note'],
+                confidence_level='educational-note'
+            )
+ 
         return {
             "success": True,
             "session_id": session_id,
             "condition_id": request.condition_id,
             "condition_name": condition_name,
-            "educational_note": educational_note
+            "educational_note": educational_note,
+            "condition_in_database": condition_exists
         }
     
     except HTTPException:
@@ -246,15 +316,16 @@ def start_chat(request: StartChatRequest):
         raise HTTPException(status_code=500, detail=f"Failed to start chat: {str(e)}")
 
 @app.post("/api/chat/query")
-def query_chat(request: QueryRequest):
+def query_chat(request: QueryRequest, req: Request, x_user_id: Optional[str] = Header(None)):
     """Send a query to the chatbot"""
     try:
-        # Get session from database
-        session = chat_db.get_session(request.session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+        # Get user_id from headers
+        user_id = get_user_id(req, x_user_id)
         
-        handler = get_handler()
+        # Get session from database (validates user ownership)
+        session = chat_db.get_session(request.session_id, user_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or access denied")
         
         # Add user message to database
         chat_db.add_message(
@@ -266,43 +337,17 @@ def query_chat(request: QueryRequest):
         # Get chat history for LLM fallback
         chat_history = chat_db.get_messages(request.session_id)
         
-        # Get bot response
-        response = handler.handle_user_query(
-            query=request.query,
-            condition_id=session['condition_id']
-        )
+        # Check if condition exists in database
+        conditions = get_available_conditions()
+        condition_exists = session['condition_id'] in conditions
         
         # Update stats
         stats = session['stats'].copy()
         stats['total_queries'] += 1
         
-        # Handle different response types
-        bot_message = None
-        confidence = 'medium-confidence'
-        
-        if response['response_type'] == 'direct_answer':
-            bot_message = response['answer']
-            confidence = 'high-confidence'
-            stats['high_confidence'] += 1
-            
-            # Add follow-up if available
-            if response.get('follow_up'):
-                bot_message += f"\n\n🤔 {response['follow_up']}"
-        
-        elif response['response_type'] == 'clarification':
-            bot_message = response['message']
-            confidence = 'medium-confidence'
-            stats['medium_confidence'] += 1
-        
-        elif response['response_type'] == 'condition_mismatch':
-            bot_message = f"⚠️ {response['message']}\n\n"
-            bot_message += f"بیماری تشخیص داده شده: **{response['detected_condition_name']}**\n\n"
-            bot_message += response['suggestion']
-            confidence = 'medium-confidence'
-            stats['medium_confidence'] += 1
-        
-        elif response['response_type'] == 'llm_fallback':
-            # Try LLM fallback
+        # If condition is not in database, use fallback directly
+        if not condition_exists:
+            # Use LLM fallback directly for unknown conditions
             condition_name = session['condition_name']
             llm_text = call_llm_fallback(
                 user_query=request.query,
@@ -319,11 +364,84 @@ def query_chat(request: QueryRequest):
                 bot_message += "💡 می‌توانید سوال خود را واضح‌تر بپرسید یا از کلمات دیگری استفاده کنید."
                 confidence = 'low-confidence'
                 stats['low_confidence'] += 1
+            
+            # Add bot message to database
+            chat_db.add_message(
+                session_id=request.session_id,
+                role='bot',
+                content=bot_message,
+                confidence_level=confidence
+            )
+            
+            # Update stats in database
+            chat_db.update_session_stats(request.session_id, user_id, stats)
+            
+            return {
+                "success": True,
+                "message": bot_message,
+                "confidence_level": confidence,
+                "response_type": "llm_fallback",
+                "stats": stats
+            }
         
+        # Condition exists in database - use NLP only if confidence > 0.89
+        handler = get_handler()
+        response = handler.handle_user_query(
+            query=request.query,
+            condition_id=session['condition_id']
+        )
+
+        bot_message = None
+        confidence = 'medium-confidence'
+        response_type = 'llm_fallback'
+
+        # Determine whether to trust the knowledge base answer
+        kb_confidence = response.get('confidence', 0)
+        use_direct_answer = (
+            response.get('response_type') == 'direct_answer' and
+            isinstance(kb_confidence, (int, float)) and
+            kb_confidence >= 0.89
+        )
+
+        if use_direct_answer:
+            bot_message = response['answer']
+            confidence = 'high-confidence'
+            response_type = 'direct_answer'
+            stats['high_confidence'] += 1
+
+            if response.get('follow_up'):
+                bot_message += f"\n\n🤔 {response['follow_up']}"
         else:
-            bot_message = "❌ خطا در پردازش سوال"
-            confidence = 'low-confidence'
-        
+            # Build optional context from retrieval result
+            fallback_context = ""
+            if response.get('response_type') == 'condition_mismatch':
+                fallback_context = (
+                    f"⚠️ {response['message']}\n\n"
+                    f"بیماری تشخیص داده شده: **{response['detected_condition_name']}**\n\n"
+                )
+            elif response.get('response_type') == 'clarification':
+                fallback_context = response.get('message', '') + "\n\n"
+
+            condition_name = session['condition_name']
+            llm_text = call_llm_fallback(
+                user_query=request.query,
+                condition_name=condition_name,
+                clinical_data=session['clinical_data'],
+                chat_history=chat_history,
+            )
+
+            if llm_text:
+                bot_message = f"{fallback_context}{llm_text}" if fallback_context else llm_text
+                confidence = 'medium-confidence'
+                stats['medium_confidence'] += 1
+            else:
+                bot_message = (
+                    "❌ متأسفم، جواب دقیقی در اطلاعات موجود پیدا نکردم.\n\n"
+                    "💡 می‌توانید سوال خود را واضح‌تر بپرسید یا از کلمات دیگری استفاده کنید."
+                )
+                confidence = 'low-confidence'
+                stats['low_confidence'] += 1
+ 
         # Add bot message to database
         chat_db.add_message(
             session_id=request.session_id,
@@ -333,13 +451,13 @@ def query_chat(request: QueryRequest):
         )
         
         # Update stats in database
-        chat_db.update_session_stats(request.session_id, stats)
+        chat_db.update_session_stats(request.session_id, user_id, stats)
         
         return {
             "success": True,
             "message": bot_message,
             "confidence_level": confidence,
-            "response_type": response.get('response_type'),
+            "response_type": response_type,
             "stats": stats
         }
     
@@ -349,11 +467,14 @@ def query_chat(request: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}")
 
 @app.get("/api/chat/history/{session_id}")
-def get_chat_history(session_id: str):
+def get_chat_history(session_id: str, req: Request, x_user_id: Optional[str] = Header(None)):
     """Get chat history for a session"""
-    session = chat_db.get_full_session(session_id)
+    # Get user_id from headers
+    user_id = get_user_id(req, x_user_id)
+    
+    session = chat_db.get_full_session(session_id, user_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Session not found or access denied")
     
     return {
         "success": True,
@@ -366,16 +487,21 @@ def get_chat_history(session_id: str):
     }
 
 @app.get("/api/chat/sessions")
-def list_all_sessions():
-    """Get list of all chat sessions (for sidebar/history display)"""
+def list_all_sessions(req: Request, x_user_id: Optional[str] = Header(None)):
+    """Get list of all chat sessions for the current user (for sidebar/history display)"""
     try:
-        session_list = chat_db.list_all_sessions()
+        # Get user_id from headers
+        user_id = get_user_id(req, x_user_id)
+        
+        session_list = chat_db.list_all_sessions(user_id)
         
         return {
             "success": True,
             "sessions": session_list,
             "total": len(session_list)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(e)}")
 
@@ -433,11 +559,15 @@ def generate_educational_note(request: StartChatRequest):
         raise HTTPException(status_code=500, detail=f"Failed to generate educational note: {str(e)}")
 
 @app.post("/api/chat/update-clinical-data")
-def update_clinical_data(request: UpdateClinicalDataRequest):
+def update_clinical_data(request: UpdateClinicalDataRequest, req: Request, x_user_id: Optional[str] = Header(None)):
     """Update clinical data for a session"""
-    session = chat_db.get_session(request.session_id)
+    # Get user_id from headers
+    user_id = get_user_id(req, x_user_id)
+    
+    # Verify session exists and belongs to user
+    session = chat_db.get_session(request.session_id, user_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Session not found or access denied")
     
     # Convert to Persian keys if needed
     clinical_data = request.clinical_data
@@ -463,7 +593,7 @@ def update_clinical_data(request: UpdateClinicalDataRequest):
         clinical_data = persian_data
     
     # Update clinical data in database
-    chat_db.update_session_clinical_data(request.session_id, clinical_data)
+    chat_db.update_session_clinical_data(request.session_id, user_id, clinical_data)
     
     return {
         "success": True,
@@ -472,11 +602,14 @@ def update_clinical_data(request: UpdateClinicalDataRequest):
     }
 
 @app.get("/api/stats/{session_id}")
-def get_stats(session_id: str):
+def get_stats(session_id: str, req: Request, x_user_id: Optional[str] = Header(None)):
     """Get statistics for a session"""
-    session = chat_db.get_session(session_id)
+    # Get user_id from headers
+    user_id = get_user_id(req, x_user_id)
+    
+    session = chat_db.get_session(session_id, user_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Session not found or access denied")
     
     return {
         "success": True,
@@ -485,11 +618,14 @@ def get_stats(session_id: str):
     }
 
 @app.delete("/api/chat/session/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, req: Request, x_user_id: Optional[str] = Header(None)):
     """Delete a chat session"""
-    deleted = chat_db.delete_session(session_id)
+    # Get user_id from headers
+    user_id = get_user_id(req, x_user_id)
+    
+    deleted = chat_db.delete_session(session_id, user_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Session not found or access denied")
     
     return {
         "success": True,
